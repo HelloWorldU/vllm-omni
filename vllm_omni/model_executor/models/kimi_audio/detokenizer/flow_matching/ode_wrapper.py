@@ -22,7 +22,7 @@ class StreamingODEWrapperForPrefix(nn.Module):
         self.clear_all_states()
 
     def clear_all_states(self):
-        self.x_cond = self.position_ids = self.seq_len = None
+        self.x_cond = self.position_ids = None
         self.incremental_state = {}
         self.kv_cache_tokens = 0
         self.cu_seqlens = None
@@ -36,25 +36,22 @@ class StreamingODEWrapperForPrefix(nn.Module):
             cache = {}
         self.x_cond = x_cond
 
-        position_ids_cur = [i for i in range(start_position_id, self.x_cond.shape[1] + start_position_id)]
-        position_ids = torch.tensor([position_ids_cur])
-        self.position_ids = position_ids.to(self.x_cond.device).long()
-        self.seq_len = torch.Tensor([position_ids.shape[1]]).to(self.x_cond.device).long()
-
-        cu_seqlens = torch.cumsum(self.seq_len, dim=0)
-        self.cu_seqlens = torch.cat([torch.Tensor([0]).to(cu_seqlens.device), cu_seqlens], dim=0).int()
-        self.cu_maxlen = self.seq_len.cpu().max()
+        seq_len = self.x_cond.shape[1]
+        self.position_ids = torch.arange(
+            start_position_id, start_position_id + seq_len, device=self.x_cond.device, dtype=torch.long
+        ).unsqueeze(0)
+        self.cu_seqlens = torch.tensor([0, seq_len], device=self.x_cond.device, dtype=torch.int32)
+        self.cu_maxlen = seq_len
 
         if self.cu_seqlens_k is None:
             self.cu_seqlens_k = self.cu_seqlens
             self.cu_maxlen_k = self.cu_maxlen
-            previous_seqlen = self.seq_len
+            previous_seqlen = seq_len
         else:
             previous_seqlen_old = cache["previous_seqlen"]
-            previous_seqlen = previous_seqlen_old + self.seq_len
-            cu_seqlens_k = torch.cumsum(previous_seqlen, dim=0)
-            self.cu_seqlens_k = torch.cat([torch.Tensor([0]).to(cu_seqlens_k.device), cu_seqlens_k], dim=0).int()
-            self.cu_maxlen_k = previous_seqlen.cpu().max()
+            previous_seqlen = previous_seqlen_old + seq_len
+            self.cu_seqlens_k = torch.tensor([0, previous_seqlen], device=self.x_cond.device, dtype=torch.int32)
+            self.cu_maxlen_k = previous_seqlen
         self.previous_seqlen = previous_seqlen
         return {"previous_seqlen": previous_seqlen}
 
@@ -72,12 +69,7 @@ class StreamingODEWrapperForPrefix(nn.Module):
                 # preserve the official rolling window of acoustic history.
                 layer_cache["attn_kvcache"]["prev_k"] = layer_cache["attn_kvcache"]["prev_k"][:, -max_kv_cache_tokens:]
                 layer_cache["attn_kvcache"]["prev_v"] = layer_cache["attn_kvcache"]["prev_v"][:, -max_kv_cache_tokens:]
-                bsz = layer_cache["attn_kvcache"]["prev_k"].shape[0]
-                self.previous_seqlen = (
-                    torch.Tensor([layer_cache["attn_kvcache"]["prev_k"].shape[1] for i in range(bsz)])
-                    .to(layer_cache["attn_kvcache"]["prev_k"].device)
-                    .long()
-                )
+                self.previous_seqlen = layer_cache["attn_kvcache"]["prev_k"].shape[1]
                 condition_cache["previous_seqlen"] = self.previous_seqlen
                 self.kv_cache_tokens = layer_cache["attn_kvcache"]["prev_k"].shape[1]
 

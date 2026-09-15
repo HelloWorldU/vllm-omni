@@ -135,9 +135,8 @@ def sample_kimi_audio_step(
             scores = torch.where(scores < 0, scores * penalty, scores / penalty)
             logits.scatter_(0, recent, scores)
 
-        logprobs = torch.log_softmax(logits.unsqueeze(0), dim=-1, dtype=torch.float)
         if temperature > 1e-6:
-            logprobs = logprobs / temperature
+            logprobs = torch.log_softmax(logits.float().unsqueeze(0) / temperature, dim=-1)
             if top_k > 0:
                 top_probs, top_ids = torch.topk(torch.exp(logprobs), top_k, dim=-1)
                 selected = torch.multinomial(top_probs, num_samples=1, generator=generator)
@@ -145,7 +144,7 @@ def sample_kimi_audio_step(
             else:
                 token = torch.multinomial(torch.exp(logprobs), num_samples=1, generator=generator)
         else:
-            token = torch.argmax(logprobs, dim=-1)
+            token = torch.argmax(logits.unsqueeze(0), dim=-1)
         sampled.append(int(token.item()))
 
     text_token, audio_token = sampled

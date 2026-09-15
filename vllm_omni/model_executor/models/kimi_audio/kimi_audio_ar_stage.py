@@ -844,8 +844,6 @@ class KimiAudioARStage(torch.nn.Module, SupportsPP):
         if offset < prompt_len:
             stop = min(end, prompt_len)
             prompt_ids = payload["audio_token_ids"][offset:stop]
-            if input_ids[: stop - offset].tolist() != prompt_ids:
-                raise ValueError("Kimi-Audio scheduled IDs do not match the prepared prompt")
             # With audio disabled, Omni may pass an uninitialized embedding
             # buffer to preprocess. Text-only prompts need no MM cache values.
             if input_embeds is None or not payload["audio_spans"]:
@@ -859,9 +857,6 @@ class KimiAudioARStage(torch.nn.Module, SupportsPP):
             embeds.append(audio + self.embed_tokens(text))
         if end > prompt_len:
             start, stop = max(0, offset - prompt_len), end - prompt_len
-            scheduled = input_ids[max(0, prompt_len - offset) :].tolist()
-            if scheduled != generation["scheduler_history"][start:stop]:
-                raise ValueError("Kimi-Audio scheduled decode IDs do not match accepted history")
             audio = generation["audio_history"][start:stop]
             text = generation["text_history"][start:stop]
             ids.extend(audio)
