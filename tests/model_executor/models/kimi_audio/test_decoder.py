@@ -54,9 +54,7 @@ def test_interleaved_requests_keep_separate_streams_and_cleanup(decoder, streams
         torch.arange(60),
         seq_token_counts=[30, 30],
         request_ids=["a", "b"],
-        runtime_additional_information=[
-            {"meta": {"stream_finished": False, "audio_seed": seed}} for seed in (42, 43)
-        ],
+        runtime_additional_information=[{"meta": {"stream_finished": False, "audio_seed": seed}} for seed in (42, 43)],
     )
     assert [call.args for call in decoder.detokenizer.new_stream.call_args_list] == [(42,), (43,)]
     assert decoder._streams == {"a": (streams[0], 1), "b": (streams[1], 1)}
@@ -94,9 +92,7 @@ def test_failed_batch_cleans_advanced_streams_but_preserves_other_requests(decod
             torch.arange(60),
             seq_token_counts=[30, 30],
             request_ids=["a", "b"],
-            runtime_additional_information=[
-                {"meta": {"stream_finished": False, "chunk_seq": 1}} for _ in range(2)
-            ],
+            runtime_additional_information=[{"meta": {"stream_finished": False, "chunk_seq": 1}} for _ in range(2)],
         )
 
     assert streams[0].detokenize_streaming.call_count == 2
