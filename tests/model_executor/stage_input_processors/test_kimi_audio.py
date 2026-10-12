@@ -65,7 +65,7 @@ def test_complete_audio_transfer_removes_controls_and_offset(prompt_builder, aud
     converted = kimi_audio_to_decoder([source], prompt)[0]
     audio_seed = prompt["additional_information"]["meta"]["audio_seed"]
     assert isinstance(audio_seed, int) and params.seed in (None, audio_seed)
-    assert converted["prompt_token_ids"] == (codes or [0])
+    assert converted["prompt_token_ids"] == [0]
     assert converted["model_intermediate_buffer"]["codes"]["audio"] == codes
     assert converted["model_intermediate_buffer"]["meta"] == {"finished": True, "audio_seed": audio_seed}
 

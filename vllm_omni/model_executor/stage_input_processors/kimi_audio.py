@@ -161,10 +161,11 @@ def kimi_audio_to_decoder(
         codes = codes.cpu().tolist()
         inputs.append(
             {
-                # A zero-length prompt is not a schedulable generation request.
-                # Preserve the real empty sequence separately; never synthesize
-                # an audible code just to schedule the empty result.
-                "prompt_token_ids": codes or [0],
+                # One placeholder schedules the whole payload as a single unit,
+                # as on the async tensor-payload path: the decoder consumes all
+                # of codes.audio per forward, so a split prompt would decode it
+                # again. It also schedules an empty result without an audible code.
+                "prompt_token_ids": [0],
                 "model_intermediate_buffer": {
                     "codes": {"audio": codes},
                     "meta": {
