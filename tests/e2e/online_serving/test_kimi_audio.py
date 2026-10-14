@@ -27,7 +27,7 @@ STAGE_CONFIG = modify_stage_config(
     updates={"stages": {0: {"max_num_seqs": 2}, 1: {"max_num_seqs": 2}}},
 )
 pytestmark = [
-    pytest.mark.core_model,
+    pytest.mark.advanced_model,
     pytest.mark.tts,
     pytest.mark.parametrize(
         "omni_server",
