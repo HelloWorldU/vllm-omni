@@ -11,9 +11,11 @@ import pytest
 import torch
 from pytest_mock import MockerFixture
 from vllm.sampling_params import SamplingParams
+from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.metrics.stats import PrefillStats, PromptTokenStats
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.utils import ConstantList
 
 from tests.helpers.omni_scheduler import bind_omits_transfer_helpers
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARScheduler
@@ -635,6 +637,45 @@ def build_adapter(monkeypatch, mocker: MockerFixture):
     return _build
 
 
+@pytest.mark.parametrize("active_stream_window", [0, 2])
+def test_scheduler_chunk_gate_preserves_kv_holding_queue(build_adapter, active_stream_window):
+    adapter, _ = build_adapter(active_stream_window=active_stream_window)
+    scheduler = OmniARScheduler.__new__(OmniARScheduler)
+    scheduler.waiting = create_request_queue(SchedulingPolicy.FCFS)
+    scheduler.kv_holding_waiting = create_request_queue(SchedulingPolicy.FCFS)
+    scheduler.deferred_waiting = set()
+    scheduler.running = []
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.input_coordinator = None
+    holder = Request("holder", [1, 2, 3], SamplingParams(max_tokens=1), pooling_params=None)
+    holder.num_computed_tokens = 2
+    fresh = Request("fresh", [1], SamplingParams(max_tokens=1), pooling_params=None)
+    scheduler.requests = {request.request_id: request for request in (holder, fresh)}
+    scheduler._enqueue_waiting_request(fresh)
+    scheduler._enqueue_waiting_request(holder)
+
+    scheduler._process_pending_omni_inputs(model_mode="ar")
+
+    assert not scheduler.waiting and not scheduler.kv_holding_waiting
+    assert list(adapter.waiting_for_chunk_waiting_requests) == [holder, fresh]
+    assert holder.status == fresh.status == RequestStatus.WAITING_FOR_CHUNK
+    scheduler._restore_omni_wait_queues()
+    assert list(scheduler.kv_holding_waiting) == [holder]
+    assert list(scheduler.waiting) == [fresh]
+
+    adapter._finished_load_reqs.add(holder.request_id)
+    scheduler._process_pending_omni_inputs(model_mode="ar")
+
+    assert holder.status == RequestStatus.WAITING
+    assert fresh.status == RequestStatus.WAITING_FOR_CHUNK
+    assert list(scheduler.kv_holding_waiting) == [holder]
+    assert not scheduler.waiting
+    assert adapter.requests_with_ready_chunks == {holder.request_id}
+    scheduler._restore_omni_wait_queues()
+    assert list(scheduler.kv_holding_waiting) == [holder]
+    assert list(scheduler.waiting) == [fresh]
+
+
 def _dequeue_load_entry(adapter, request):
     """Register and take the entry as the background recv loop would."""
     adapter.load_async(request)
@@ -1157,16 +1198,21 @@ def test_segment_boundary_starts_new_send_watermark_before_background_flush(buil
     assert adapter.requests_num_chunks_sent["ext-stream"] == 3
 
 
-def test_background_send_uses_enqueued_request_snapshot(build_adapter):
+@pytest.mark.parametrize("prompt_token_ids", [[], [1, 2], list(range(2508))], ids=["empty", "short", "long"])
+@pytest.mark.parametrize("wrap_prompt", [False, True], ids=["list", "constant-list"])
+def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_token_ids, wrap_prompt, mocker):
     """A queued segment must not observe later in-place request mutations."""
     adapter, _ = build_adapter(stage_id=1)
+    live_prompt_token_ids = prompt_token_ids.copy()
     request = Request(
         request_id="req-stream",
-        prompt_token_ids=[1, 2],
+        prompt_token_ids=live_prompt_token_ids,
         sampling_params=SamplingParams(max_tokens=8),
         pooling_params=None,
         resumable=True,
     )
+    if wrap_prompt:
+        mocker.patch.object(request, "prompt_token_ids", ConstantList(live_prompt_token_ids))
     request.external_req_id = "ext-stream"
     ref_audio = torch.tensor([0.1, -0.1])
     request.additional_information = {"codes": {"ref": ref_audio}, "meta": {"segment": "old"}}
@@ -1193,7 +1239,7 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter):
         is_segment_finished=True,
     )
     request.additional_information["meta"]["segment"] = "next"
-    request.prompt_token_ids.append(3)
+    live_prompt_token_ids.append(3)
     request.append_output_token_ids([8])
     request._omni_segment_generation = 1
     adapter.save_async(
@@ -1202,7 +1248,7 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter):
         is_segment_finished=True,
     )
     request.additional_information["meta"]["segment"] = "later"
-    request.prompt_token_ids.append(4)
+    live_prompt_token_ids.append(4)
     request.append_output_token_ids([9])
 
     assert len(adapter._pending_save_reqs) == 2
@@ -1215,9 +1261,29 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter):
     adapter._send_single_request(second_task)
 
     assert seen_requests == [
-        ("old", [1, 2], [7], [1, 2, 7], True),
-        ("next", [1, 2, 3], [7, 8], [1, 2, 7, 8], True),
+        ("old", prompt_token_ids, [7], prompt_token_ids + [7], True),
+        ("next", prompt_token_ids + [3], [7, 8], prompt_token_ids + [7, 8], True),
     ]
+
+
+def test_request_snapshot_preserves_embeddings_only_prompt():
+    prompt_embeds = torch.zeros(2, 4)
+    request = Request(
+        request_id="req-embeds",
+        prompt_token_ids=None,
+        prompt_embeds=prompt_embeds,
+        sampling_params=SamplingParams(max_tokens=8),
+        pooling_params=None,
+    )
+    request.append_output_token_ids([7])
+
+    snapshot = OmniChunkTransferAdapter._snapshot_processor_request(request)
+    request.append_output_token_ids([8])
+
+    assert snapshot.prompt_token_ids is None
+    assert snapshot.prompt_embeds is prompt_embeds
+    assert list(snapshot.output_token_ids) == [7]
+    assert snapshot.output_token_count == 1
 
 
 def test_save_without_custom_processor_does_not_snapshot_request(build_adapter, mocker):
@@ -2445,7 +2511,8 @@ def test_finish_requests_reclaims_resumable_segment_and_reuses_capacity(
     scheduler.requests = {request.request_id: request}
     scheduler.running = [request] if placement == "running" else []
     scheduler.waiting = DummyWaitingQueue([request] if placement == "waiting" else [])
-    scheduler.skipped_waiting = DummyWaitingQueue([request] if placement.startswith("skipped") else [])
+    scheduler.kv_holding_waiting = DummyWaitingQueue([request] if placement.startswith("skipped") else [])
+    scheduler.deferred_waiting = set()
     scheduler.num_waiting_for_streaming_input = int(streaming_counter_owned)
 
     freed = []
@@ -2469,7 +2536,7 @@ def test_finish_requests_reclaims_resumable_segment_and_reuses_capacity(
     assert not adapter.waiting_for_chunk_running_requests
     assert scheduler.running == []
     assert list(scheduler.waiting) == []
-    assert list(scheduler.skipped_waiting) == []
+    assert list(scheduler.kv_holding_waiting) == []
     assert scheduler.num_waiting_for_streaming_input == 0
 
     fresh_a = _req("req-fresh-a", RequestStatus.WAITING)
@@ -2492,7 +2559,8 @@ def test_finish_requests_does_not_reopen_off_queue_resumable_segment(build_adapt
     scheduler.requests = {request.request_id: request}
     scheduler.running = []
     scheduler.waiting = DummyWaitingQueue()
-    scheduler.skipped_waiting = DummyWaitingQueue()
+    scheduler.kv_holding_waiting = DummyWaitingQueue()
+    scheduler.deferred_waiting = set()
     scheduler._free_request = lambda *args, **kwargs: pytest.fail("off-queue request was freed")
 
     assert (
@@ -2566,6 +2634,7 @@ def test_generation_scheduler_calls_cleanup_on_finished(monkeypatch, mocker: Moc
 
     scheduler = mocker.MagicMock()
     scheduler._first_chunk_express = False
+    scheduler.aux_output_connector = None
     scheduler._express_min_slack_s = 0.0
     scheduler.chunk_transfer_adapter = adapter_mock
     scheduler.connector = None
@@ -2646,6 +2715,7 @@ def test_ar_scheduler_defers_cleanup_and_queues_save_on_finished(mocker: MockerF
     adapter_mock.save_async = lambda *a, **kw: save_calls.append((a, kw))
 
     scheduler = mocker.MagicMock()
+    scheduler.aux_output_connector = None
     scheduler.chunk_transfer_adapter = adapter_mock
     bind_omits_transfer_helpers(scheduler)
     scheduler.connector = None
@@ -2744,6 +2814,8 @@ def test_omni_ar_scheduler_finish_requests(mocker: MockerFixture):
     sched.requests = {}
     sched.running = []
     sched.waiting = []
+    sched.kv_holding_waiting = []
+    sched.deferred_waiting = set()
 
     with patch.object(VLLMScheduler, "finish_requests", _super_finish):
         OmniARScheduler.finish_requests(sched, ["r1"], RequestStatus.FINISHED_ABORTED)
@@ -2759,7 +2831,8 @@ def _parked_sender_scheduler(adapter, session):
     scheduler.requests = {session.request_id: session}
     scheduler.running = []
     scheduler.waiting = DummyWaitingQueue()
-    scheduler.skipped_waiting = DummyWaitingQueue([session])
+    scheduler.kv_holding_waiting = DummyWaitingQueue([session])
+    scheduler.deferred_waiting = set()
     scheduler.num_waiting_for_streaming_input = 1
     scheduler.finished_req_ids_dict = {}
 
