@@ -9,6 +9,8 @@ from transformers import WhisperConfig
 
 from vllm_omni.model_executor.models.common.whisper_vq import WhisperVQEncoder
 
+pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+
 
 @pytest.fixture
 def encoder():

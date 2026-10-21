@@ -11,6 +11,8 @@ import torch
 
 from vllm_omni.model_executor.models.kimi_audio.kimi_audio_decoder import KimiAudioDecoder
 
+pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+
 
 @pytest.fixture
 def streams():

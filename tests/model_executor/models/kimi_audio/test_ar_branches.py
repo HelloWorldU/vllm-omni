@@ -11,6 +11,8 @@ from torch import nn
 
 from vllm_omni.model_executor.models.kimi_audio import kimi_audio_ar_stage
 
+pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
+
 
 class InplaceLayer(nn.Module):
     def __init__(self):
