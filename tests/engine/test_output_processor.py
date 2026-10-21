@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-"""Tests for OmniRequestState and MultimodalOutputProcessor."""
+"""Regression tests for OmniRequestState multimodal DELTA drain and consolidation guard."""
 
 from dataclasses import dataclass
 from enum import Flag
