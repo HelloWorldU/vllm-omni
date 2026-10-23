@@ -13,8 +13,8 @@ Both deployments use the official inference example's audio sampling settings:
 The two streams have separate settings; setting the text `temperature` to zero
 does not make audio sampling greedy.
 
-Install vLLM-Omni with its `kimi-audio` extra, including the acoustic decoder
-dependencies, and restart the server after installing this branch. The install
+Install vLLM-Omni; the acoustic decoder needs no extra dependencies. Restart
+the server after installing this branch. The install
 registers `kimi_audio_omni`: it selects the Omni renderer while reusing vLLM's
 Kimi-Audio tokenizer.
 

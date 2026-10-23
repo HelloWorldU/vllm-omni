@@ -9,7 +9,7 @@ online and streaming usage is described in the
 ## Setup
 
 Follow the [installation guide](../../../docs/getting_started/installation/README.md)
-and install vLLM-Omni with its `kimi-audio` extra. The model needs the full
+and install vLLM-Omni; no extra dependencies are needed. The model needs the full
 Kimi-Audio-7B-Instruct checkpoint, including `whisper-large-v3`,
 `audio_detokenizer` and `vocoder`, plus the GLM voice tokenizer snapshot.
 Model IDs can be used directly; local snapshots can be selected with
